@@ -1,0 +1,36 @@
+version: '3'
+
+volumes:
+  db_data:
+
+services:
+  rest:
+    build: .
+    image: aiopypay
+    tty: true
+    restart: always
+    ports:
+      - "8080:8080"
+    env_file:
+      - ./.env
+    environment:
+      - WAIT_HOSTS=${POSTGRES_HOST}:${POSTGRES_PORT}
+    # python3.8 -m aiopypay
+    command: /bin/bash -c "
+      waitc &&
+      tail -f /dev/null
+      "
+
+  postgres:
+    image: postgres:11.5
+    tty: true
+    restart: always
+    env_file:
+      - ./.env
+    volumes:
+        - db_data:/var/lib/postgresql/data
+
+  adminer:
+    image: adminer
+    ports:
+      - "9000:8080"

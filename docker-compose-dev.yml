@@ -1,0 +1,9 @@
+version: '3'
+
+services:
+  rest:
+    environment:
+      - APP_DEBUG=True
+    volumes:
+      - ./aiopypay:/srv/aiopypay
+
