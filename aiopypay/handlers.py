@@ -1,8 +1,10 @@
 import hashlib
 # noinspection PyUnresolvedReferences
+import json
 import logging
 import math
 
+import psycopg2
 from aiohttp import web
 from sqlalchemy import and_, select
 
@@ -11,8 +13,12 @@ from .models import *
 routes = web.RouteTableDef()
 
 
+def log(*args, **kwargs):
+    logging.getLogger('aiohttp.server').debug(*args, **kwargs)
+
+
 # ===========================================
-# Helpers
+# DB helpers
 
 async def get_one(conn, clause):
     cursor = await conn.execute(clause)
@@ -29,6 +35,9 @@ async def get_many(conn, clause):
 
 
 # ===========================================
+# Handlers itself
+
+# --------- Currencies
 
 @routes.get('/currencies')
 async def get_currencies(request):
@@ -36,6 +45,8 @@ async def get_currencies(request):
         result = await get_many(conn, currencies.select())
     return web.json_response(result)
 
+
+# --------- Users
 
 @routes.post('/users')
 async def register_user(request):
@@ -45,8 +56,7 @@ async def register_user(request):
     try:
         user['username'] = form['username']
         user['password_hash'] = hashlib.md5(form['password'].encode('utf-8')).hexdigest()
-        user['first_name'] = form.get('first_name', '')
-        user['last_name'] = form.get('last_name', '')
+        user['full_name'] = form.get('full_name', 'Unknown')
     except KeyError:
         raise web.HTTPBadRequest
 
@@ -55,34 +65,64 @@ async def register_user(request):
             if await get_one(conn, users.select().where(users.c.username == user['username'])):
                 raise web.HTTPConflict
 
-            user['id'] = (await get_one(conn, users.insert(values=user)))['id']
+            user_id = (await get_one(conn, users.insert(values=user)))['id']
 
             # logging.getLogger('aiohttp.server').debug('{}'.format(result.id))
 
-            await conn.execute(accounts.insert(values=dict(user_id=user['id'], currency_id='USD', amount=100)))
-            await conn.execute(accounts.insert(values=dict(user_id=user['id'], currency_id='CNY', amount=0)))
-            await conn.execute(accounts.insert(values=dict(user_id=user['id'], currency_id='EUR', amount=0)))
+            # create default accounts
+            await conn.execute(accounts.insert(values=dict(user_id=user_id, currency_id='USD', amount=100)))
+            await conn.execute(accounts.insert(values=dict(user_id=user_id, currency_id='CNY', amount=0)))
+            await conn.execute(accounts.insert(values=dict(user_id=user_id, currency_id='EUR', amount=0)))
 
-    del user['password_hash']
+        user = await get_one(
+            conn,
+            users.select().where(users.c.id == user_id)
+        )
+        del user['password_hash']
+        del user['is_superuser']
+
     return web.json_response(user, status=201)
 
 
+# --------- Accounts
+
 @routes.get(r'/users/{id:\d+}/accounts')
-async def get_user_accounts(request):
-    user_id = request.match_info['id']
-
+async def get_accounts(request):
     async with request.app['db'].acquire() as conn:
-        result = await get_many(conn, accounts.select().where(accounts.c.user_id == user_id))
+        result = await get_many(
+            conn,
+            accounts.select().where(accounts.c.user_id == request.match_info['id'])
+        )
 
-    # logging.getLogger('aiohttp.server').debug('{}'.format(result))
     return web.json_response(result)
 
 
-# @routes.post(r'/users/{id:\d+}/accounts')
-# async def create_account(request):
-#     user_id = request.match_info['id']
-#
-#     pass
+@routes.post(r'/users/{user_id:\d+}/accounts/{currency_id:[A-Z]{3}}')
+async def create_account(request):
+    user_id = request.match_info['user_id']
+    currency_id = request.match_info['currency_id']
+
+    # noinspection PyUnresolvedReferences
+    try:
+        async with request.app['db'].acquire() as conn:
+            account_id = (await get_one(
+                conn,
+                accounts.insert(values=dict(
+                    user_id=user_id,
+                    currency_id=currency_id,
+                    amount=0
+                ))
+            ))['id']
+    except psycopg2.errors.ForeignKeyViolation:
+        return web.json_response({'error': "Bad request"}, status=400)
+
+    return web.json_response(await get_one(
+        conn,
+        accounts.select().where(accounts.c.id == account_id)
+    ))
+
+
+# --------- Transfers
 
 @routes.post('/transfers')
 async def make_transfer(request):
@@ -96,17 +136,19 @@ async def make_transfer(request):
         raise web.HTTPBadRequest
 
     # noinspection PyShadowingNames
-    async def transfer(conn, from_account_id, to_account_id, from_amount, to_amount):
+    async def transfer(conn, from_account_id, to_account_id, amount, comment):
+        """ Executes transfer and log it"""
+
         await conn.execute(
             accounts
                 .update(accounts.c.id == from_account_id)
-                .values(amount=accounts.c.amount - from_amount)
+                .values(amount=accounts.c.amount - amount)
         )
 
         await conn.execute(
             accounts
                 .update(accounts.c.id == to_account_id)
-                .values(amount=accounts.c.amount + to_amount)
+                .values(amount=accounts.c.amount + amount)
         )
 
         return await get_one(
@@ -114,11 +156,11 @@ async def make_transfer(request):
             transfers
                 .insert()
                 .values(from_account_id=from_account_id, to_account_id=to_account_id,
-                        from_amount=from_amount, to_amount=to_amount)
+                        amount=amount, comment=comment)
         )
 
     async with request.app['db'].acquire() as conn:
-        async with conn.begin():
+        async with conn.begin():  # Enter transaction
             from_acc = await get_one(conn, accounts.select().where(accounts.c.id == from_account_id))
             to_acc = await get_one(conn, accounts.select().where(accounts.c.id == to_account_id))
 
@@ -144,15 +186,44 @@ async def make_transfer(request):
             else:
                 comission = 0
 
-            total_from = amount + comission
-
-            if from_acc['amount'] < total_from:
+            if from_acc['amount'] < amount + comission:
                 return web.json_response({'error': "No enough money on account {}".format(from_account_id)}, status=400)
 
             result = []
-            result.append(await transfer(conn, from_account_id, to_account_id, total_from, amount))
+
+            result.append(
+                await transfer(
+                    conn, from_account_id, to_account_id, amount,
+
+                    "External payment"
+                    if from_acc['user_id'] != to_acc['user_id'] else
+                    "Internal transfer"
+                )
+            )
 
             if comission:
-                result.append(await transfer(conn, from_account_id, superuser_account_id, comission, comission))
+                result.append(
+                    await transfer(
+                        conn, from_account_id, superuser_account_id, comission,
+                        "Commission"
+                    )
+                )
 
-    return web.json_response(result)
+    return web.json_response({"transfers": result})
+
+# @routes.get('/accounts')
+#     if 'user_id' in request.query:
+#         clause = clause
+#
+#     if 'currency_id' in request.query:
+#         clause = clause.where(accounts.c.currency_id == request.query['currency_id'])
+
+
+@routes.get('/transfers')
+async def get_transfers(request):
+    clause = transfers.select()
+
+    async with request.app['db'].acquire() as conn:
+        result = await get_many(conn, clause)
+
+    return web.json_response(result, dumps=lambda o: json.dumps(o, default=str))

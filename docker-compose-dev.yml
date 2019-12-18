@@ -2,8 +2,17 @@ version: '3'
 
 services:
   rest:
-    environment:
-      - APP_DEBUG=True
     volumes:
       - ./aiopypay:/srv/aiopypay
+      - ./tests:/srv/tests
+    environment:
+      - APP_DEBUG=True
+    command: /bin/bash -c "
+      waitc &&
+      tail -f /dev/null
+      "
 
+  adminer:
+    image: adminer
+    ports:
+      - "9000:8080"

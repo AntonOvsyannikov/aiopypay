@@ -4,11 +4,12 @@ case "$1" in
     ;;
 
   test)
-    docker-compose -f docker-compose.yml -f docker-compose-test.yml up --build
+    docker-compose -f docker-compose-test.yml up --build
+    docker-compose -f docker-compose-test.yml down -v
     ;;
 
   cleanup)
-    docker-compose down -v
+    docker-compose -f docker-compose.yml -f docker-compose-dev.yml down -v
     ;;
 
   prod)

@@ -50,8 +50,7 @@ def init_data(engine):
         superuser_id = conn.execute(models.users.insert(values=dict(
             username='superuser',
             password_hash=hashlib.md5(os.environ['APP_SUPERUSER_PASSWORD'].encode('utf-8')).hexdigest(),
-            first_name='Superuser',
-            last_name='Superuser',
+            full_name='Superuser',
             is_superuser=True,
         ))).inserted_primary_key[0]
 
@@ -86,7 +85,6 @@ def migrate(force_recreate):
         print("Initializing database...")
         create_tables(engine)
         init_data(engine)
-        sample_data(engine)
         print('Done')
     else:
         print("Working with initialized database.")

@@ -22,8 +22,7 @@ users = Table(
     Column('id', Integer, primary_key=True, autoincrement=True),
     Column('username', String, nullable=False),
     Column('password_hash', String, nullable=False),
-    Column('first_name', String, nullable=False),
-    Column('last_name', String, nullable=False),
+    Column('full_name', String, nullable=False),
     Column('is_superuser', Boolean, nullable=False, default=False),
 )
 
@@ -43,6 +42,6 @@ transfers = Table(
     Column('timestamp', DateTime, default=datetime.utcnow, nullable=False),
     Column('from_account_id', Integer, ForeignKey('accounts.id', ondelete='CASCADE'), nullable=False),
     Column('to_account_id', Integer, ForeignKey('accounts.id', ondelete='CASCADE'), nullable=False),
-    Column('from_amount', Float(), nullable=False),
-    Column('to_amount', Float(), nullable=False),
+    Column('amount', Float(), nullable=False),
+    Column('comment', String(), nullable=False, default=''),
 )

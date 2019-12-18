@@ -1,23 +1,23 @@
 version: '3'
 
 volumes:
-  db_data:
+  test_db_data:
 
 services:
   rest:
     build: .
     image: aiopypay
     tty: true
-    restart: always
-    ports:
-      - "8080:8080"
+    volumes:
+      - ./aiopypay:/srv/aiopypay
+      - ./tests:/srv/tests
     env_file:
       - ./.env
     environment:
       - WAIT_HOSTS=${POSTGRES_HOST}:${POSTGRES_PORT}
     command: /bin/bash -c "
       waitc &&
-      python3.8 -m aiopypay
+      pytest --disable-warnings -v
       "
 
   postgres:
@@ -27,5 +27,5 @@ services:
     env_file:
       - ./.env
     volumes:
-        - db_data:/var/lib/postgresql/data
+        - test_db_data:/var/lib/postgresql/data
 
