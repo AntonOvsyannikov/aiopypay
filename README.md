@@ -1,7 +1,11 @@
 # aiopypay
 Simple payment system prototype, REST backend done with aiohttp, tested with pytest and deployed with docker-compose.
 
-PostgreSQL is used as database. All money sensitive operations are performed in transactions. Aiohttp is chosen as gold standard for fast asynchronous API. There are other choices, like FastAPI. Aiopg.sa is used for async database access.
+PostgreSQL is used as database. All money sensitive operations are performed in transactions. 
+
+Aiohttp is chosen as gold standard for fast asynchronous API. There are other choices, like FastAPI. 
+
+Aiopg.sa is used for async database access. No ORM is used.
 
 
 ## Installation and running
