@@ -58,8 +58,7 @@ Owner of "from" account should be authorized.
 If accounts belongs to same user there is no commission.
 If accounts belongs to different users, there is commission, configured
 for each currency. Commission is charged additionally to transfer amount
-and transferred to special account (depends on currency) of superuser,
-which id is 1.
+and transferred to special account (depends on currency) of superuser (id=1).
 Currency conversion not supported. 
 ```
 
