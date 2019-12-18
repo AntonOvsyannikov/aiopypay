@@ -1,16 +1,20 @@
+import base64
 import hashlib
 # noinspection PyUnresolvedReferences
 import json
 import logging
 import math
+import re
+from functools import wraps
 
 import psycopg2
-from aiohttp import web
-from sqlalchemy import and_, select
+from aiohttp import web, BasicAuth
+from sqlalchemy import and_, select, or_, desc, asc
 
 from .models import *
 
-routes = web.RouteTableDef()
+
+# ===========================================
 
 
 def log(*args, **kwargs):
@@ -35,7 +39,53 @@ async def get_many(conn, clause):
 
 
 # ===========================================
+# Basic Auth
+
+@web.middleware
+async def auth_middleware(request, handler):
+    auth = request.headers.get('Authorization', None)
+    if auth:
+        try:
+            basic_auth = BasicAuth.decode(auth, 'utf-8')
+        except ValueError:
+            raise web.HTTPBadRequest
+
+        async with request.app['db'].acquire() as conn:
+            user = await get_one(
+                conn,
+                users.select().where(users.c.username == basic_auth.login)
+            )
+
+            if user is not None and user['password_hash'] == hashlib.md5(
+                    basic_auth.password.encode('utf-8')).hexdigest():
+                request['authorized_user'] = user
+
+    return await handler(request)
+
+
+def auth_required(matched_userid=None):
+    def wrapper(handler):
+        @wraps(handler)
+        async def wraped(request):
+            if 'authorized_user' not in request:
+                raise web.HTTPUnauthorized
+
+            if matched_userid is not None:
+                if request['authorized_user']['id'] != int(request.match_info[matched_userid]):
+                    raise web.HTTPForbidden
+
+            return await handler(request)
+
+        return wraped
+
+    return wrapper
+
+
+# ===========================================
 # Handlers itself
+
+routes = web.RouteTableDef()
+
 
 # --------- Currencies
 
@@ -58,7 +108,10 @@ async def register_user(request):
         user['password_hash'] = hashlib.md5(form['password'].encode('utf-8')).hexdigest()
         user['full_name'] = form.get('full_name', 'Unknown')
     except KeyError:
-        raise web.HTTPBadRequest
+        return web.json_response({'error': "Incorrect parameters"}, status=400)
+
+    if not re.match(r'^[a-zA-Z_\d@]+$', user['username']):
+        return web.json_response({'error': "Bad username"}, status=400)
 
     async with request.app['db'].acquire() as conn:
         async with conn.begin():
@@ -87,6 +140,7 @@ async def register_user(request):
 # --------- Accounts
 
 @routes.get(r'/users/{id:\d+}/accounts')
+@auth_required('id')
 async def get_accounts(request):
     async with request.app['db'].acquire() as conn:
         result = await get_many(
@@ -97,7 +151,26 @@ async def get_accounts(request):
     return web.json_response(result)
 
 
+@routes.get(r'/accounts/{id:\d+}')
+@auth_required()
+async def get_accounts(request):
+    user = request['authorized_user']
+    async with request.app['db'].acquire() as conn:
+        account = await get_one(
+            conn,
+            accounts.select().where(accounts.c.id == request.match_info['id'])
+        )
+        if account is None:
+            raise web.HTTPNotFound
+
+        if account['user_id'] != user['id']:
+            raise web.HTTPForbidden
+
+    return web.json_response(account)
+
+
 @routes.post(r'/users/{user_id:\d+}/accounts/{currency_id:[A-Z]{3}}')
+@auth_required('user_id')
 async def create_account(request):
     user_id = request.match_info['user_id']
     currency_id = request.match_info['currency_id']
@@ -124,16 +197,18 @@ async def create_account(request):
 
 # --------- Transfers
 
-@routes.post('/transfers')
+@routes.post(r'/users/{user_id:\d+}/transfers')
+@auth_required('user_id')
 async def make_transfer(request):
     form = await request.post()
+    user_id = request['authorized_user']['id']
 
     try:
         from_account_id = form['from']
         to_account_id = form['to']
         amount = float(form['amount'])
     except KeyError:
-        raise web.HTTPBadRequest
+        return web.json_response({'error': "Missing transfer details"}, status=400)
 
     # noinspection PyShadowingNames
     async def transfer(conn, from_account_id, to_account_id, amount, comment):
@@ -159,6 +234,7 @@ async def make_transfer(request):
                         amount=amount, comment=comment)
         )
 
+    log('here')
     async with request.app['db'].acquire() as conn:
         async with conn.begin():  # Enter transaction
             from_acc = await get_one(conn, accounts.select().where(accounts.c.id == from_account_id))
@@ -166,6 +242,9 @@ async def make_transfer(request):
 
             if from_acc is None or to_acc is None:
                 return web.json_response({'error': "Bad account id"}, status=400)
+
+            if from_acc['user_id'] != user_id:
+                raise web.HTTPForbidden
 
             if from_acc['currency_id'] != to_acc['currency_id']:
                 return web.json_response({'error': "Currency conversion is not allowed"}, status=400)
@@ -209,21 +288,57 @@ async def make_transfer(request):
                     )
                 )
 
+            log('here')
+
     return web.json_response({"transfers": result})
 
-# @routes.get('/accounts')
-#     if 'user_id' in request.query:
-#         clause = clause
-#
-#     if 'currency_id' in request.query:
-#         clause = clause.where(accounts.c.currency_id == request.query['currency_id'])
 
-
-@routes.get('/transfers')
+@routes.get(r'/users/{user_id:\d+}/transfers')
+@auth_required('user_id')
 async def get_transfers(request):
-    clause = transfers.select()
+    user = request['authorized_user']
+
+    # filtering
+    from_user_id = request.query.get('from', None)
+    to_user_id = request.query.get('to', None)
+
+    # sorting
+    sort = request.query.get('sort', None)
+    if not sort in [None, 'asc', 'dsc']:
+        return web.json_response({'error': "Bad sort param, use sort=[asc|dsc]"}, status=400)
 
     async with request.app['db'].acquire() as conn:
+        user_accounts = [d['id'] for d in await get_many(
+            conn,
+            select([accounts.c.id]).where(accounts.c.user_id == user['id'])
+        )]
+
+        # Basic clause, we show only transfers to or from authorized user
+        clause = transfers.select().where(or_(
+            transfers.c.from_account_id.in_(user_accounts),
+            transfers.c.to_account_id.in_(user_accounts),
+        ))
+
+        # Additional filtering by from/to user id
+        if from_user_id:
+            from_user_accounts = [d['id'] for d in await get_many(
+                conn,
+                select([accounts.c.id]).where(accounts.c.user_id == from_user_id)
+            )]
+            clause = clause.where(transfers.c.from_account_id.in_(from_user_accounts))
+
+        if to_user_id:
+            to_user_accounts = [d['id'] for d in await get_many(
+                conn,
+                select([accounts.c.id]).where(accounts.c.user_id == to_user_id)
+            )]
+            clause = clause.where(transfers.c.to_account_id.in_(to_user_accounts))
+
+        # Sort it
+        if sort:
+            clause = clause.order_by((asc if sort == 'asc' else desc)(transfers.c.id))
+
         result = await get_many(conn, clause)
 
     return web.json_response(result, dumps=lambda o: json.dumps(o, default=str))
+
