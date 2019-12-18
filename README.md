@@ -19,6 +19,7 @@ There is short documentation for REST API. In real project it is better to docum
 with some of Swagger tool like aiohttp-swagger.
 
 API in using Basic Auth. In real project API should be secured with https, in example with nginx reverse proxy.
+
 ```
 @routes.get('/currencies')
 Returns list of currencies n the system.
@@ -41,20 +42,32 @@ Returns users's accounts list.
 @auth_required()
 Returns account status by account id. Owner of account should be authorized.
 ```
+
 ```
 @routes.post(r'/users/{user_id:\d+}/accounts/{currency_id:[A-Z]{3}}')
 @auth_required('user_id')
 Creates new account with given currency.
 ```
+
 ```
 @routes.post(r'/users/{user_id:\d+}/transfers')
 @form_data('from', 'to', 'amount')
 @auth_required('user_id')
-Makes transfer from account id "from" to accound with id "to". Owner of "from" account should be authorized.
+Makes transfer from account id "from" to account id "to". 
+Owner of "from" account should be authorized.
+If accounts belongs to same user there is no commission.
+If accounts belongs to different users, there is commission, configured
+for each currency. Commission is charged additionally to transfer amount
+and transferred to special account (depends on currency) of superuser,
+which id is 1.
+Currency conversion not supported. 
 ```
+
 ```
 @routes.get(r'/users/{user_id:\d+}/transfers')
 @query_string('from', 'to', 'sort')
 @auth_required('user_id')
-Lists all transfers from and to given user. User should be authorized. Additional filetering is available by given "from" and "to" user ids. Also list can be sorted ascendig or descending with "sort=[asc|dsc]"
+Lists all transfers from and to given user. User should be authorized. 
+Additional filetering is available by given "from" and "to" user ids. 
+Also list can be sorted ascending or descending with "sort=[asc|dsc]"
 ```
